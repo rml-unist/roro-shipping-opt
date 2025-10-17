@@ -4,6 +4,11 @@
 
 This repository is the final source code submitted by FAST for Optimization Grand Challenge 2025, organized by LG CNS.
 
+<p align="center">
+<img src="./imgage/image.png" width="300" height="180">
+</p>
+Reference : https://www.news1.kr/economy/trend/5312046 ⓒ News1 윤일지 기자
+
 ---
 
 ## Contact
@@ -44,6 +49,11 @@ cd ../
 
 ## Run
 ```bash
-python3 myalgorithm 
+python3 myalgorithm.py <PROBLEM_NAME> <PROBLEM_FILE_PATH> <TIMELIMIT>
 ```
+
+---
+
+## Video
+https://youtu.be/k6kmN5ykTqw
 
