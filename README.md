@@ -5,7 +5,7 @@
 This repository is the final source code submitted by FAST for Optimization Grand Challenge 2025, organized by LG CNS.
 
 <p align="center">
-<img src="./image/image.png" width="300" height="180">
+<img src="./image/image.png" width="400" height="280">
 </p>
 Reference : https://www.news1.kr/economy/trend/5312046 ⓒ News1 윤일지 기자
 
