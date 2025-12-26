@@ -345,21 +345,19 @@ def generate_stage2_graph(
 
 def generate_demands_stage2(P, capacity, situation='normal'):
     """
-    Stage 2 스타일 수요 생성
+    Stage 2 스타일 수요 생성 (용량 제약 준수)
 
     Args:
         P: 포트 수
         capacity: 최대 수용량 (N-1)
         situation: 상황 타입
     """
-    K = []
-
     # 상황별 파라미터
     if situation == 'normal':
         fill_ratio = random.uniform(1.0, 1.5)
         long_trip_ratio = 0.3
     elif situation == 'tight':
-        fill_ratio = random.uniform(1.5, 2.2)
+        fill_ratio = random.uniform(1.5, 2.0)  # 2.2 -> 2.0으로 완화
         long_trip_ratio = 0.4
     elif situation == 'crossing':
         fill_ratio = random.uniform(1.2, 1.8)
@@ -375,11 +373,52 @@ def generate_demands_stage2(P, capacity, situation='normal'):
         long_trip_ratio = 0.3
 
     target_total = int(capacity * fill_ratio)
-    current_total = 0
 
-    while current_total < target_total:
+    # 수요를 OD별로 관리
+    demand_dict = defaultdict(int)  # (origin, dest) -> count
+
+    def compute_load_at_ports():
+        """각 포트에서의 적재량 계산 (loading 후 기준)"""
+        load = [0] * P
+        for (o, d), count in demand_dict.items():
+            # origin에서 load, dest에서 unload
+            # 포트 p에서의 적재량 = origin <= p < dest인 수요들의 합
+            for p in range(o, d):
+                load[p] += count
+        return load
+
+    def get_max_load():
+        """현재 수요로 인한 최대 적재량"""
+        load = compute_load_at_ports()
+        return max(load) if load else 0
+
+    def can_add_demand(origin, dest, count):
+        """수요 추가 시 용량 초과 여부 확인"""
+        # 임시로 추가
+        demand_dict[(origin, dest)] += count
+        max_load = get_max_load()
+        # 롤백
+        demand_dict[(origin, dest)] -= count
+        if demand_dict[(origin, dest)] == 0:
+            del demand_dict[(origin, dest)]
+        return max_load <= capacity
+
+    def find_available_count(origin, dest, max_count):
+        """추가 가능한 최대 수량 찾기"""
+        for count in range(max_count, 0, -1):
+            if can_add_demand(origin, dest, count):
+                return count
+        return 0
+
+    current_total = 0
+    max_attempts = target_total * 3  # 무한 루프 방지
+    attempts = 0
+
+    while current_total < target_total and attempts < max_attempts:
+        attempts += 1
+
+        # OD 쌍 선택
         if situation == 'rehandling':
-            # 중간 포트 집중
             mid = P // 2
             if random.random() < 0.4:
                 origin = random.randint(0, max(0, mid - 1))
@@ -391,32 +430,29 @@ def generate_demands_stage2(P, capacity, situation='normal'):
                 origin = random.randint(0, P - 2)
                 dest = random.randint(origin + 1, P - 1)
         elif situation == 'crossing' and random.random() < long_trip_ratio:
-            # 긴 여정
             origin = random.randint(0, max(0, P // 3 - 1))
             dest = random.randint(min(P - 1, P * 2 // 3), P - 1)
         else:
-            # 일반
             origin = random.randint(0, P - 2)
             dest = random.randint(origin + 1, P - 1)
 
         # 수량 결정
         if situation == 'tight':
-            count = random.randint(3, max(3, int(capacity * 0.15)))
+            desired_count = random.randint(3, max(3, int(capacity * 0.15)))
         else:
-            count = random.randint(1, max(1, int(capacity * 0.1)))
+            desired_count = random.randint(1, max(1, int(capacity * 0.1)))
 
-        if current_total + count > target_total:
-            count = target_total - current_total
+        remaining = target_total - current_total
+        desired_count = min(desired_count, remaining)
 
-        if count > 0:
-            K.append([[origin, dest], count])
-            current_total += count
+        # 용량 체크하며 추가 가능한 수량 찾기
+        actual_count = find_available_count(origin, dest, desired_count)
 
-    # 동일한 OD 합치기
-    demand_dict = defaultdict(int)
-    for (origin, dest), count in K:
-        demand_dict[(origin, dest)] += count
+        if actual_count > 0:
+            demand_dict[(origin, dest)] += actual_count
+            current_total += actual_count
 
+    # 결과 변환
     K = [[[o, d], c] for (o, d), c in demand_dict.items()]
 
     return K
