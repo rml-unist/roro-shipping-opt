@@ -162,7 +162,7 @@ def generate_stage2_graph(
                         edges.append([[x, y, deck], [x, y + 1, deck], {}])
                         E.append([current_id, neighbor_id])
 
-    # Ramp 생성 (deck 간 연결)
+    # Ramp 생성 (deck 간 연결) - 반드시 연결 보장
     ramp_nodes = []
     for deck in range(num_decks - 1):
         # 두 deck 모두에 존재하는 위치 찾기
@@ -179,10 +179,46 @@ def generate_stage2_graph(
                             continue
                         common_positions.append((x, y))
 
-        # Ramp 위치 선택
-        num_ramps = min(ramps_per_connection, len(common_positions))
-        if num_ramps > 0 and common_positions:
-            ramp_positions = random.sample(common_positions, num_ramps)
+        # 공통 위치가 없으면 강제로 하나 생성
+        if not common_positions:
+            # 두 deck에서 가장 가까운 노드 쌍 찾기
+            for x in range(max(config_lower['width'], config_upper['width'])):
+                for y in range(max(config_lower['height'], config_upper['height'])):
+                    if (x, y, deck) in coord_to_id and (x, y, deck + 1) in coord_to_id:
+                        common_positions.append((x, y))
+                        break
+                if common_positions:
+                    break
+
+            # 여전히 없으면 missing 노드를 복원해서라도 연결
+            if not common_positions:
+                # lower deck의 첫 번째 노드와 upper deck의 첫 번째 노드를 찾아 연결
+                lower_nodes = [(x, y) for (x, y, d) in coord_to_id if d == deck]
+                upper_nodes = [(x, y) for (x, y, d) in coord_to_id if d == deck + 1]
+                if lower_nodes and upper_nodes:
+                    # 같은 x,y 위치 중 하나에 노드 추가
+                    for lx, ly in lower_nodes:
+                        if (lx, ly) in upper_nodes:
+                            common_positions.append((lx, ly))
+                            break
+                    if not common_positions and lower_nodes:
+                        # 강제로 upper deck에 노드 추가
+                        lx, ly = lower_nodes[0]
+                        info = {
+                            "pos": [lx, ly + (deck + 1) * (grid_height + 1.8)],
+                            "type": "hold",
+                            "id": node_id,
+                            "distance": 0
+                        }
+                        nodes.append([[lx, ly, deck + 1], info])
+                        coord_to_id[(lx, ly, deck + 1)] = node_id
+                        node_id += 1
+                        common_positions.append((lx, ly))
+
+        # Ramp 위치 선택 (최소 1개 보장)
+        num_ramps = max(1, min(ramps_per_connection, len(common_positions)))
+        if common_positions:
+            ramp_positions = random.sample(common_positions, min(num_ramps, len(common_positions)))
 
             for (x, y) in ramp_positions:
                 lower_id = coord_to_id[(x, y, deck)]
@@ -201,27 +237,101 @@ def generate_stage2_graph(
         if node[1]['id'] in ramp_nodes:
             node[1]['type'] = 'ramp'
 
-    # 거리 재계산 (BFS from gate)
+    # 거리 재계산 (BFS from gate) 및 연결성 보장
     from collections import deque
-    adj = defaultdict(list)
-    for a, b in E:
-        adj[a].append(b)
-        adj[b].append(a)
 
-    distances = {0: 0}
-    queue = deque([0])
-    while queue:
-        current = queue.popleft()
-        for neighbor in adj[current]:
-            if neighbor not in distances:
-                distances[neighbor] = distances[current] + 1
-                queue.append(neighbor)
+    def rebuild_adj():
+        adj = defaultdict(list)
+        for a, b in E:
+            adj[a].append(b)
+            adj[b].append(a)
+        return adj
+
+    def compute_distances():
+        adj = rebuild_adj()
+        dists = {0: 0}
+        queue = deque([0])
+        while queue:
+            current = queue.popleft()
+            for neighbor in adj[current]:
+                if neighbor not in dists:
+                    dists[neighbor] = dists[current] + 1
+                    queue.append(neighbor)
+        return dists
+
+    distances = compute_distances()
+
+    # 연결되지 않은 노드 확인 및 연결
+    all_node_ids = set(coord_to_id.values())
+    disconnected = all_node_ids - set(distances.keys())
+
+    max_iterations = len(disconnected) + 10
+    iteration = 0
+    while disconnected and iteration < max_iterations:
+        iteration += 1
+
+        # 연결되지 않은 노드 중 하나 선택
+        disc_id = next(iter(disconnected))
+
+        # 이 노드의 좌표 찾기
+        disc_coord = None
+        for coord, nid in coord_to_id.items():
+            if nid == disc_id:
+                disc_coord = coord
+                break
+
+        if disc_coord is None:
+            break
+
+        x, y, deck = disc_coord
+
+        # 연결된 노드 중 가장 가까운 같은 deck 노드 찾기
+        connected_same_deck = []
+        for coord, nid in coord_to_id.items():
+            if coord[2] == deck and nid in distances:
+                dist = abs(coord[0] - x) + abs(coord[1] - y)
+                connected_same_deck.append((dist, coord, nid))
+
+        if connected_same_deck:
+            connected_same_deck.sort()
+            _, closest_coord, closest_id = connected_same_deck[0]
+
+            # 엣지 추가
+            E.append([disc_id, closest_id])
+            edges.append([[x, y, deck], list(closest_coord), {}])
+        else:
+            # 다른 deck의 연결된 노드와 연결 (ramp 추가)
+            connected_any = []
+            for coord, nid in coord_to_id.items():
+                if nid in distances:
+                    dist = abs(coord[0] - x) + abs(coord[1] - y) + abs(coord[2] - deck) * 10
+                    connected_any.append((dist, coord, nid))
+
+            if connected_any:
+                connected_any.sort()
+                _, closest_coord, closest_id = connected_any[0]
+                E.append([disc_id, closest_id])
+                if closest_coord[2] != deck:
+                    edges.append([[x, y, deck], list(closest_coord), {"ramp": True}])
+                    ramp_nodes.append(disc_id)
+                    ramp_nodes.append(closest_id)
+                else:
+                    edges.append([[x, y, deck], list(closest_coord), {}])
+
+        # BFS 재실행
+        distances = compute_distances()
+        disconnected = all_node_ids - set(distances.keys())
+
+    # 노드 타입 업데이트 (ramp_nodes 반영)
+    for node in nodes:
+        if node[1]['id'] in ramp_nodes:
+            node[1]['type'] = 'ramp'
 
     # 거리 업데이트
     for node in nodes:
-        node_id = node[1]['id']
-        if node_id in distances:
-            node[1]['distance'] = distances[node_id]
+        nid = node[1]['id']
+        if nid in distances:
+            node[1]['distance'] = distances[nid]
 
     N = len(nodes)
 
@@ -365,13 +475,33 @@ def generate_problem_stage2(
     }
 
 
+def check_feasibility(prob):
+    """myalgorithm_orin으로 feasibility 체크"""
+    import io
+    from contextlib import redirect_stdout
+
+    try:
+        # Import here to avoid circular dependency
+        from myalgorithm_orin import algorithm
+        import util
+
+        with redirect_stdout(io.StringIO()):
+            solution = algorithm(prob, timelimit=30)
+        result = util.check_feasibility(prob, solution)
+        return result.get('feasible', False)
+    except Exception:
+        return False
+
+
 def generate_diverse_dataset_v2(
     num_problems=500,
     output_dir='diverse_training_data_v2',
-    situation_weights=None
+    situation_weights=None,
+    validate_feasibility=True
 ):
     """
     다양한 Stage 2 형식 데이터셋 생성
+    validate_feasibility=True면 각 문제를 myalgorithm_orin으로 검증
     """
     if situation_weights is None:
         situation_weights = {
@@ -388,11 +518,15 @@ def generate_diverse_dataset_v2(
     weights = list(situation_weights.values())
 
     stats = defaultdict(list)
+    total_attempts = 0
 
     print(f"Generating {num_problems} Stage 2 format problems...")
     print(f"Situation weights: {situation_weights}")
+    if validate_feasibility:
+        print("Feasibility validation: ENABLED (using myalgorithm_orin)")
 
-    for i in range(1, num_problems + 1):
+    i = 1
+    while i <= num_problems:
         situation = random.choices(situations, weights=weights)[0]
 
         # 다양한 크기 분포
@@ -422,6 +556,14 @@ def generate_diverse_dataset_v2(
             grid_height=grid_height
         )
 
+        total_attempts += 1
+
+        # Feasibility 검증
+        if validate_feasibility:
+            if not check_feasibility(prob):
+                # 실패시 재생성
+                continue
+
         # 저장
         filepath = os.path.join(output_dir, f'prob{i}.json')
         with open(filepath, 'w') as f:
@@ -442,12 +584,17 @@ def generate_diverse_dataset_v2(
         stats['ramp_count'].append(ramp_count)
 
         if i % 100 == 0:
-            print(f"  Generated {i}/{num_problems} problems")
+            success_rate = i / total_attempts * 100
+            print(f"  Generated {i}/{num_problems} problems (attempts: {total_attempts}, success rate: {success_rate:.1f}%)")
+
+        i += 1
 
     # 통계 출력
     print("\n" + "=" * 60)
     print("Generated Dataset Statistics (Stage 2 Format)")
     print("=" * 60)
+    if validate_feasibility:
+        print(f"Total attempts: {total_attempts}, Success rate: {num_problems/total_attempts*100:.1f}%")
     print(f"N: min={min(stats['N'])}, max={max(stats['N'])}, avg={np.mean(stats['N']):.1f}")
     print(f"P: min={min(stats['P'])}, max={max(stats['P'])}, avg={np.mean(stats['P']):.1f}")
     print(f"K: min={min(stats['K_count'])}, max={max(stats['K_count'])}, avg={np.mean(stats['K_count']):.1f}")
